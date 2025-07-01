@@ -1,14 +1,14 @@
 # Required libraries:
-# pip install flask flask-socketio eventlet matplotlib smbus2 bmp280
+# pip install flask flask-sock eventlet matplotlib smbus2 bmp280
 
 from flask import Flask, render_template_string, request
-from flask_socketio import SocketIO
+from flask_sock import Sock
 from smbus2 import SMBus
 from bmp280 import BMP280
 import threading
 import time
-import eventlet
 import math
+import json
 
 # Initialize BMP280
 bus = SMBus(1)
@@ -22,7 +22,8 @@ altitude_history = []
 time_history = []
 
 app = Flask(__name__)
-socketio = SocketIO(app)
+sock = Sock(app)
+clients = []
 
 def calculate_altitude(pressure, sea_level_pressure=1013.25):
     return 44330.0 * (1.0 - (pressure / sea_level_pressure) ** (1/5.255))
@@ -39,14 +40,13 @@ def sensor_thread():
         timestamp = time.time()
         temperature_history.append((timestamp, temperature))
         altitude_history.append((timestamp, relative_altitude))
-        time_history.append(timestamp)
 
         # Keep only last 2 hours
         cutoff = timestamp - 7200
         temperature_history[:] = [(t, v) for t, v in temperature_history if t >= cutoff]
         altitude_history[:] = [(t, v) for t, v in altitude_history if t >= cutoff]
 
-        socketio.emit('sensor_update', {
+        data = json.dumps({
             'temperature': temperature,
             'pressure': pressure,
             'altitude': altitude,
@@ -54,29 +54,88 @@ def sensor_thread():
             'temperature_history': temperature_history,
             'altitude_history': altitude_history,
         })
-        socketio.sleep(1)
+
+        for ws in clients[:]:
+            try:
+                ws.send(data)
+            except:
+                clients.remove(ws)
+        time.sleep(1)
 
 @app.route('/')
 def index():
     return render_template_string(PAGE_HTML)
 
-@socketio.on('set_reference')
-def handle_set_reference():
-    global reference_altitude
-    pressure = bmp280.get_pressure()
-    reference_altitude = calculate_altitude(pressure)
-
-@socketio.on('set_baro_offset')
-def handle_baro_offset():
-    print("BARO_ALT_OFFSET called (placeholder)")
+@sock.route('/ws')
+def websocket(ws):
+    clients.append(ws)
+    while True:
+        try:
+            msg = ws.receive()
+            if msg == 'set_reference':
+                global reference_altitude
+                pressure = bmp280.get_pressure()
+                reference_altitude = calculate_altitude(pressure)
+            elif msg == 'set_baro_offset':
+                print("BARO_ALT_OFFSET called (placeholder)")
+        except:
+            break
 
 PAGE_HTML = '''
 <!DOCTYPE html>
 <html>
 <head>
     <title>BMP280 Dashboard</title>
-    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        let socket;
+        let tempChart, altChart;
+
+        function initCharts() {
+            const ctx1 = document.getElementById('tempChart').getContext('2d');
+            const ctx2 = document.getElementById('altChart').getContext('2d');
+            tempChart = new Chart(ctx1, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
+                options: { scales: { x: { type: 'linear', title: { display: true, text: 'Time (s)' } } } }
+            });
+            altChart = new Chart(ctx2, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Altitude', data: [], borderColor: 'blue' }] },
+                options: { scales: { x: { type: 'linear', title: { display: true, text: 'Time (s)' } } } }
+            });
+        }
+
+        function connect() {
+            socket = new WebSocket('ws://' + window.location.host + '/ws');
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                document.getElementById('temp').textContent = data.temperature.toFixed(2);
+                document.getElementById('press').textContent = data.pressure.toFixed(2);
+                document.getElementById('alt').textContent = data.altitude.toFixed(2);
+                document.getElementById('ralt').textContent = data.relative_altitude.toFixed(2);
+
+                const tempData = data.temperature_history.map(p => ({ x: p[0], y: p[1] }));
+                const altData = data.altitude_history.map(p => ({ x: p[0], y: p[1] }));
+
+                tempChart.data.labels = tempData.map(p => p.x);
+                tempChart.data.datasets[0].data = tempData;
+                altChart.data.labels = altData.map(p => p.x);
+                altChart.data.datasets[0].data = altData;
+                tempChart.update();
+                altChart.update();
+            };
+        }
+
+        function sendCommand(cmd) {
+            socket.send(cmd);
+        }
+
+        window.onload = function() {
+            initCharts();
+            connect();
+        }
+    </script>
+    <script src="/static/chart.min.js"></script>
 </head>
 <body>
     <h1>Live Sensor Data</h1>
@@ -84,50 +143,14 @@ PAGE_HTML = '''
     <div>Pressure: <span id="press">--</span> hPa</div>
     <div>Altitude: <span id="alt">--</span> m</div>
     <div>Relative Altitude: <span id="ralt">--</span> m</div>
-    <button onclick="socket.emit('set_reference')">Set Reference Altitude</button>
-    <button onclick="socket.emit('set_baro_offset')">Set BARO_ALT_OFFSET</button>
+    <button onclick="sendCommand('set_reference')">Set Reference Altitude</button>
+    <button onclick="sendCommand('set_baro_offset')">Set BARO_ALT_OFFSET</button>
 
     <h2>Temperature over Time</h2>
     <canvas id="tempChart"></canvas>
 
     <h2>Altitude over Time</h2>
     <canvas id="altChart"></canvas>
-
-    <script>
-        const socket = io();
-        const tempDisplay = document.getElementById('temp');
-        const pressDisplay = document.getElementById('press');
-        const altDisplay = document.getElementById('alt');
-        const raltDisplay = document.getElementById('ralt');
-
-        const tempChart = new Chart(document.getElementById('tempChart'), {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
-            options: { scales: { x: { type: 'time', time: { unit: 'minute' } } } }
-        });
-
-        const altChart = new Chart(document.getElementById('altChart'), {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'Altitude', data: [], borderColor: 'blue' }] },
-            options: { scales: { x: { type: 'time', time: { unit: 'minute' } } } }
-        });
-
-        socket.on('sensor_update', data => {
-            tempDisplay.textContent = data.temperature.toFixed(2);
-            pressDisplay.textContent = data.pressure.toFixed(2);
-            altDisplay.textContent = data.altitude.toFixed(2);
-            raltDisplay.textContent = data.relative_altitude.toFixed(2);
-
-            const tempData = data.temperature_history.map(p => ({ x: p[0]*1000, y: p[1] }));
-            const altData = data.altitude_history.map(p => ({ x: p[0]*1000, y: p[1] }));
-            tempChart.data.labels = tempData.map(p => p.x);
-            tempChart.data.datasets[0].data = tempData;
-            altChart.data.labels = altData.map(p => p.x);
-            altChart.data.datasets[0].data = altData;
-            tempChart.update();
-            altChart.update();
-        });
-    </script>
 </body>
 </html>
 '''
@@ -136,4 +159,4 @@ if __name__ == '__main__':
     thread = threading.Thread(target=sensor_thread)
     thread.daemon = True
     thread.start()
-    socketio.run(app, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000)
