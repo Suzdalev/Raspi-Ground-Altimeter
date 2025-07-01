@@ -1,26 +1,19 @@
 # Required libraries:
-# pip install flask flask-sock eventlet matplotlib smbus2 bmp280 adafruit-circuitpython-ahtx0
+# pip install flask flask-sock eventlet matplotlib smbus2 bmp280
 
 from flask import Flask, render_template_string, request
 from flask_sock import Sock
 from smbus2 import SMBus
 from bmp280 import BMP280
-import adafruit_ahtx0
-import board
 import threading
 import time
 import math
 import json
-import busio
 
-# Initialize I2C bus for both sensors separately
+# Initialize I2C bus for BMP280
 bus_bmp = SMBus(1)
 bmp280 = BMP280(i2c_dev=bus_bmp, i2c_addr=0x77)
 bmp280.setup()
-
-# AHT20 uses a different I2C bus object from CircuitPython
-i2c_aht = busio.I2C(board.SCL, board.SDA)
-aht20 = adafruit_ahtx0.AHTx0(i2c_aht)
 
 # Globals
 reference_altitude = None
@@ -40,7 +33,6 @@ def sensor_thread():
         try:
             temperature = round(bmp280.get_temperature(), 1)
             pressure = bmp280.get_pressure()
-            humidity = round(aht20.relative_humidity, 1)
             altitude = round(calculate_altitude(pressure), 1)
 
             global reference_altitude
@@ -58,7 +50,6 @@ def sensor_thread():
             json_data = json.dumps({
                 'temperature': temperature,
                 'pressure': pressure,
-                'humidity': humidity,
                 'altitude': altitude,
                 'relative_altitude': relative_altitude,
                 'temperature_history': temperature_history,
@@ -93,9 +84,6 @@ def websocket(ws):
                 print("BARO_ALT_OFFSET called (placeholder)")
         except:
             break
-
-
-
 
 
 PAGE_HTML = '''
