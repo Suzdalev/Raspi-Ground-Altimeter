@@ -1,19 +1,24 @@
 # Required libraries:
-# pip install flask flask-sock eventlet matplotlib smbus2 bme280
+# pip install flask flask-sock eventlet matplotlib smbus2 bmp280 ahtx0
 
 from flask import Flask, render_template_string, request
 from flask_sock import Sock
 from smbus2 import SMBus
-import bme280
+from bmp280 import BMP280
+import adafruit_ahtx0
+import board
 import threading
 import time
 import math
 import json
+import busio
 
-# Initialize BME280
+# Initialize I2C bus and sensors
 bus = SMBus(1)
-address = 0x77
-calibration_params = bme280.load_calibration_params(bus, address)
+bmp280 = BMP280(i2c_dev=bus, i2c_addr=0x77)
+bmp280.setup()
+i2c = busio.I2C(board.SCL, board.SDA)
+aht20 = adafruit_ahtx0.AHTx0(i2c)
 
 # Globals
 reference_altitude = None
@@ -30,10 +35,9 @@ def calculate_altitude(pressure, sea_level_pressure=1013.25):
 
 def sensor_thread():
     while True:
-        data = bme280.sample(bus, address, calibration_params)
-        temperature = round(data.temperature, 1)
-        pressure = data.pressure
-        humidity = round(data.humidity, 1)
+        temperature = round(bmp280.get_temperature(), 1)
+        pressure = bmp280.get_pressure()
+        humidity = round(aht20.relative_humidity, 1)
         altitude = round(calculate_altitude(pressure), 1)
 
         global reference_altitude
@@ -77,8 +81,8 @@ def websocket(ws):
             msg = ws.receive()
             if msg == 'set_reference':
                 global reference_altitude
-                data = bme280.sample(bus, address, calibration_params)
-                reference_altitude = calculate_altitude(data.pressure)
+                pressure = bmp280.get_pressure()
+                reference_altitude = calculate_altitude(pressure)
             elif msg == 'set_baro_offset':
                 print("BARO_ALT_OFFSET called (placeholder)")
         except:
@@ -88,7 +92,7 @@ PAGE_HTML = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>BME280 Dashboard</title>
+    <title>BMP280 + AHT20 Dashboard</title>
     <script>
         let socket;
         let tempChart, altChart;
@@ -134,7 +138,7 @@ PAGE_HTML = '''
                 altChart.data.datasets[0].data = altData;
                 tempChart.update();
                 altChart.update();
-                humChart.update(); // Will be used when humidity history is added
+                humChart.update();
             };
         }
 
