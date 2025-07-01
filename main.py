@@ -85,12 +85,11 @@ def websocket(ws):
         except:
             break
 
-
 PAGE_HTML = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>BMP280 + AHT20 Dashboard</title>
+    <title>BMP280 Dashboard</title>
     <script>
         let socket;
         let tempChart, altChart;
@@ -98,7 +97,6 @@ PAGE_HTML = '''
         function initCharts() {
             const ctxAlt = document.getElementById('altChart').getContext('2d');
             const ctxTemp = document.getElementById('tempChart').getContext('2d');
-            const ctxHum = document.getElementById('humChart').getContext('2d');
 
             altChart = new Chart(ctxAlt, {
                 type: 'line',
@@ -111,12 +109,6 @@ PAGE_HTML = '''
                 data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
                 options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
             });
-
-            humChart = new Chart(ctxHum, {
-                type: 'line',
-                data: { labels: [], datasets: [{ label: 'Humidity', data: [], borderColor: 'green' }] },
-                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
-            });
         }
 
         function connect() {
@@ -125,7 +117,6 @@ PAGE_HTML = '''
                 const data = JSON.parse(event.data);
                 document.getElementById('temp').textContent = data.temperature.toFixed(1);
                 document.getElementById('press').textContent = data.pressure.toFixed(2);
-                document.getElementById('hum').textContent = data.humidity.toFixed(1);
                 document.getElementById('alt').textContent = data.altitude.toFixed(1);
                 document.getElementById('ralt').textContent = data.relative_altitude.toFixed(1);
 
@@ -136,7 +127,6 @@ PAGE_HTML = '''
                 altChart.data.datasets[0].data = altData;
                 tempChart.update();
                 altChart.update();
-                humChart.update();
             };
         }
 
@@ -155,7 +145,6 @@ PAGE_HTML = '''
     <h1>Live Sensor Data</h1>
     <div>Temperature: <span id="temp">--</span> °C</div>
     <div>Pressure: <span id="press">--</span> hPa</div>
-    <div>Humidity: <span id="hum">--</span> %</div>
     <div>Altitude: <span id="alt">--</span> m</div>
     <div>Relative Altitude: <span id="ralt">--</span> m</div>
     <button onclick="sendCommand('set_reference')">Set Reference Altitude</button>
@@ -166,13 +155,9 @@ PAGE_HTML = '''
 
     <h2>Temperature over Time</h2>
     <canvas id="tempChart"></canvas>
-
-    <h2>Humidity over Time</h2>
-    <canvas id="humChart"></canvas>
 </body>
 </html>
 '''
-
 
 if __name__ == '__main__':
     thread = threading.Thread(target=sensor_thread)
