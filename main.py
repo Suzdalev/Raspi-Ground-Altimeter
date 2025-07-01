@@ -1,19 +1,19 @@
 # Required libraries:
-# pip install flask flask-sock eventlet matplotlib smbus2 bmp280
+# pip install flask flask-sock eventlet matplotlib smbus2 bme280
 
 from flask import Flask, render_template_string, request
 from flask_sock import Sock
 from smbus2 import SMBus
-from bmp280 import BMP280
+import bme280
 import threading
 import time
 import math
 import json
 
-# Initialize BMP280
+# Initialize BME280
 bus = SMBus(1)
-bmp280 = BMP280(i2c_dev=bus, i2c_addr=0x77)
-bmp280.setup()
+address = 0x77
+calibration_params = bme280.load_calibration_params(bus, address)
 
 # Globals
 reference_altitude = None
@@ -30,12 +30,14 @@ def calculate_altitude(pressure, sea_level_pressure=1013.25):
 
 def sensor_thread():
     while True:
-        temperature = bmp280.get_temperature()
-        pressure = bmp280.get_pressure()
-        altitude = calculate_altitude(pressure)
+        data = bme280.sample(bus, address, calibration_params)
+        temperature = round(data.temperature, 1)
+        pressure = data.pressure
+        humidity = round(data.humidity, 1)
+        altitude = round(calculate_altitude(pressure), 1)
 
         global reference_altitude
-        relative_altitude = altitude - reference_altitude if reference_altitude is not None else 0.0
+        relative_altitude = round(altitude - reference_altitude, 1) if reference_altitude is not None else 0.0
 
         timestamp = time.time()
         temperature_history.append((timestamp, temperature))
@@ -46,9 +48,10 @@ def sensor_thread():
         temperature_history[:] = [(t, v) for t, v in temperature_history if t >= cutoff]
         altitude_history[:] = [(t, v) for t, v in altitude_history if t >= cutoff]
 
-        data = json.dumps({
+        json_data = json.dumps({
             'temperature': temperature,
             'pressure': pressure,
+            'humidity': humidity,
             'altitude': altitude,
             'relative_altitude': relative_altitude,
             'temperature_history': temperature_history,
@@ -57,7 +60,7 @@ def sensor_thread():
 
         for ws in clients[:]:
             try:
-                ws.send(data)
+                ws.send(json_data)
             except:
                 clients.remove(ws)
         time.sleep(1)
@@ -74,8 +77,8 @@ def websocket(ws):
             msg = ws.receive()
             if msg == 'set_reference':
                 global reference_altitude
-                pressure = bmp280.get_pressure()
-                reference_altitude = calculate_altitude(pressure)
+                data = bme280.sample(bus, address, calibration_params)
+                reference_altitude = calculate_altitude(data.pressure)
             elif msg == 'set_baro_offset':
                 print("BARO_ALT_OFFSET called (placeholder)")
         except:
@@ -85,23 +88,32 @@ PAGE_HTML = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>BMP280 Dashboard</title>
+    <title>BME280 Dashboard</title>
     <script>
         let socket;
         let tempChart, altChart;
 
         function initCharts() {
-            const ctx1 = document.getElementById('tempChart').getContext('2d');
-            const ctx2 = document.getElementById('altChart').getContext('2d');
-            tempChart = new Chart(ctx1, {
-                type: 'line',
-                data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
-                options: { scales: { x: { type: 'linear', title: { display: true, text: 'Time (s)' } } } }
-            });
-            altChart = new Chart(ctx2, {
+            const ctxAlt = document.getElementById('altChart').getContext('2d');
+            const ctxTemp = document.getElementById('tempChart').getContext('2d');
+            const ctxHum = document.getElementById('humChart').getContext('2d');
+
+            altChart = new Chart(ctxAlt, {
                 type: 'line',
                 data: { labels: [], datasets: [{ label: 'Altitude', data: [], borderColor: 'blue' }] },
-                options: { scales: { x: { type: 'linear', title: { display: true, text: 'Time (s)' } } } }
+                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
+            });
+
+            tempChart = new Chart(ctxTemp, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
+                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
+            });
+
+            humChart = new Chart(ctxHum, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Humidity', data: [], borderColor: 'green' }] },
+                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
             });
         }
 
@@ -109,20 +121,20 @@ PAGE_HTML = '''
             socket = new WebSocket('ws://' + window.location.host + '/ws');
             socket.onmessage = function(event) {
                 const data = JSON.parse(event.data);
-                document.getElementById('temp').textContent = data.temperature.toFixed(2);
+                document.getElementById('temp').textContent = data.temperature.toFixed(1);
                 document.getElementById('press').textContent = data.pressure.toFixed(2);
-                document.getElementById('alt').textContent = data.altitude.toFixed(2);
-                document.getElementById('ralt').textContent = data.relative_altitude.toFixed(2);
+                document.getElementById('hum').textContent = data.humidity.toFixed(1);
+                document.getElementById('alt').textContent = data.altitude.toFixed(1);
+                document.getElementById('ralt').textContent = data.relative_altitude.toFixed(1);
 
-                const tempData = data.temperature_history.map(p => ({ x: p[0], y: p[1] }));
-                const altData = data.altitude_history.map(p => ({ x: p[0], y: p[1] }));
+                const tempData = data.temperature_history.map(p => ({ x: new Date(p[0]*1000), y: p[1] }));
+                const altData = data.altitude_history.map(p => ({ x: new Date(p[0]*1000), y: p[1] }));
 
-                tempChart.data.labels = tempData.map(p => p.x);
                 tempChart.data.datasets[0].data = tempData;
-                altChart.data.labels = altData.map(p => p.x);
                 altChart.data.datasets[0].data = altData;
                 tempChart.update();
                 altChart.update();
+                humChart.update(); // Will be used when humidity history is added
             };
         }
 
@@ -141,16 +153,20 @@ PAGE_HTML = '''
     <h1>Live Sensor Data</h1>
     <div>Temperature: <span id="temp">--</span> °C</div>
     <div>Pressure: <span id="press">--</span> hPa</div>
+    <div>Humidity: <span id="hum">--</span> %</div>
     <div>Altitude: <span id="alt">--</span> m</div>
     <div>Relative Altitude: <span id="ralt">--</span> m</div>
     <button onclick="sendCommand('set_reference')">Set Reference Altitude</button>
     <button onclick="sendCommand('set_baro_offset')">Set BARO_ALT_OFFSET</button>
 
+    <h2>Altitude over Time</h2>
+    <canvas id="altChart"></canvas>
+
     <h2>Temperature over Time</h2>
     <canvas id="tempChart"></canvas>
 
-    <h2>Altitude over Time</h2>
-    <canvas id="altChart"></canvas>
+    <h2>Humidity over Time</h2>
+    <canvas id="humChart"></canvas>
 </body>
 </html>
 '''
