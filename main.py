@@ -1,5 +1,5 @@
 # Required libraries:
-# pip install flask flask-sock eventlet matplotlib smbus2 bmp280 ahtx0
+# pip install flask flask-sock eventlet matplotlib smbus2 bmp280 adafruit-circuitpython-ahtx0
 
 from flask import Flask, render_template_string, request
 from flask_sock import Sock
@@ -13,12 +13,14 @@ import math
 import json
 import busio
 
-# Initialize I2C bus and sensors
-bus = SMBus(1)
-bmp280 = BMP280(i2c_dev=bus, i2c_addr=0x77)
+# Initialize I2C bus for both sensors separately
+bus_bmp = SMBus(1)
+bmp280 = BMP280(i2c_dev=bus_bmp, i2c_addr=0x77)
 bmp280.setup()
-i2c = busio.I2C(board.SCL, board.SDA)
-aht20 = adafruit_ahtx0.AHTx0(i2c)
+
+# AHT20 uses a different I2C bus object from CircuitPython
+i2c_aht = busio.I2C(board.SCL, board.SDA)
+aht20 = adafruit_ahtx0.AHTx0(i2c_aht)
 
 # Globals
 reference_altitude = None
@@ -35,38 +37,42 @@ def calculate_altitude(pressure, sea_level_pressure=1013.25):
 
 def sensor_thread():
     while True:
-        temperature = round(bmp280.get_temperature(), 1)
-        pressure = bmp280.get_pressure()
-        humidity = round(aht20.relative_humidity, 1)
-        altitude = round(calculate_altitude(pressure), 1)
+        try:
+            temperature = round(bmp280.get_temperature(), 1)
+            pressure = bmp280.get_pressure()
+            humidity = round(aht20.relative_humidity, 1)
+            altitude = round(calculate_altitude(pressure), 1)
 
-        global reference_altitude
-        relative_altitude = round(altitude - reference_altitude, 1) if reference_altitude is not None else 0.0
+            global reference_altitude
+            relative_altitude = round(altitude - reference_altitude, 1) if reference_altitude is not None else 0.0
 
-        timestamp = time.time()
-        temperature_history.append((timestamp, temperature))
-        altitude_history.append((timestamp, relative_altitude))
+            timestamp = time.time()
+            temperature_history.append((timestamp, temperature))
+            altitude_history.append((timestamp, relative_altitude))
 
-        # Keep only last 2 hours
-        cutoff = timestamp - 7200
-        temperature_history[:] = [(t, v) for t, v in temperature_history if t >= cutoff]
-        altitude_history[:] = [(t, v) for t, v in altitude_history if t >= cutoff]
+            # Keep only last 2 hours
+            cutoff = timestamp - 7200
+            temperature_history[:] = [(t, v) for t, v in temperature_history if t >= cutoff]
+            altitude_history[:] = [(t, v) for t, v in altitude_history if t >= cutoff]
 
-        json_data = json.dumps({
-            'temperature': temperature,
-            'pressure': pressure,
-            'humidity': humidity,
-            'altitude': altitude,
-            'relative_altitude': relative_altitude,
-            'temperature_history': temperature_history,
-            'altitude_history': altitude_history,
-        })
+            json_data = json.dumps({
+                'temperature': temperature,
+                'pressure': pressure,
+                'humidity': humidity,
+                'altitude': altitude,
+                'relative_altitude': relative_altitude,
+                'temperature_history': temperature_history,
+                'altitude_history': altitude_history,
+            })
 
-        for ws in clients[:]:
-            try:
-                ws.send(json_data)
-            except:
-                clients.remove(ws)
+            for ws in clients[:]:
+                try:
+                    ws.send(json_data)
+                except:
+                    clients.remove(ws)
+        except Exception as e:
+            print("Sensor read error:", e)
+
         time.sleep(1)
 
 @app.route('/')
@@ -87,6 +93,10 @@ def websocket(ws):
                 print("BARO_ALT_OFFSET called (placeholder)")
         except:
             break
+
+
+
+
 
 PAGE_HTML = '''
 <!DOCTYPE html>
@@ -174,6 +184,7 @@ PAGE_HTML = '''
 </body>
 </html>
 '''
+
 
 if __name__ == '__main__':
     thread = threading.Thread(target=sensor_thread)
