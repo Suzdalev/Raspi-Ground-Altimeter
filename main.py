@@ -9,6 +9,7 @@ import threading
 import time
 import math
 import json
+from datetime import datetime
 
 # Initialize I2C bus for BMP280
 bus_bmp = SMBus(1)
@@ -38,14 +39,14 @@ def sensor_thread():
             global reference_altitude
             relative_altitude = round(altitude - reference_altitude, 1) if reference_altitude is not None else 0.0
 
-            timestamp = time.time()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             temperature_history.append((timestamp, temperature))
             altitude_history.append((timestamp, relative_altitude))
 
             # Keep only last 2 hours
-            cutoff = timestamp - 7200
-            temperature_history[:] = [(t, v) for t, v in temperature_history if t >= cutoff]
-            altitude_history[:] = [(t, v) for t, v in altitude_history if t >= cutoff]
+            cutoff_time = time.time() - 7200
+            temperature_history[:] = [(t, v) for t, v in temperature_history if time.mktime(time.strptime(t, '%Y-%m-%d %H:%M:%S')) >= cutoff_time]
+            altitude_history[:] = [(t, v) for t, v in altitude_history if time.mktime(time.strptime(t, '%Y-%m-%d %H:%M:%S')) >= cutoff_time]
 
             json_data = json.dumps({
                 'temperature': temperature,
@@ -100,14 +101,14 @@ PAGE_HTML = '''
 
             altChart = new Chart(ctxAlt, {
                 type: 'line',
-                data: { labels: [], datasets: [{ label: 'Altitude', data: [], borderColor: 'blue' }] },
-                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
+                data: { labels: [], datasets: [{ label: 'Altitude', data: [], borderColor: 'blue', fill: false }] },
+                options: { scales: { x: { title: { display: true, text: 'Time' } } } }
             });
 
             tempChart = new Chart(ctxTemp, {
                 type: 'line',
-                data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red' }] },
-                options: { scales: { x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Local Time' } } } }
+                data: { labels: [], datasets: [{ label: 'Temperature', data: [], borderColor: 'red', fill: false }] },
+                options: { scales: { x: { title: { display: true, text: 'Time' } } } }
             });
         }
 
@@ -120,11 +121,15 @@ PAGE_HTML = '''
                 document.getElementById('alt').textContent = data.altitude.toFixed(1);
                 document.getElementById('ralt').textContent = data.relative_altitude.toFixed(1);
 
-                const tempData = data.temperature_history.map(p => ({ x: new Date(p[0]*1000), y: p[1] }));
-                const altData = data.altitude_history.map(p => ({ x: new Date(p[0]*1000), y: p[1] }));
+                const tempData = data.temperature_history.map(p => ({ x: p[0], y: p[1] }));
+                const altData = data.altitude_history.map(p => ({ x: p[0], y: p[1] }));
 
-                tempChart.data.datasets[0].data = tempData;
-                altChart.data.datasets[0].data = altData;
+                tempChart.data.labels = tempData.map(d => d.x);
+                tempChart.data.datasets[0].data = tempData.map(d => d.y);
+
+                altChart.data.labels = altData.map(d => d.x);
+                altChart.data.datasets[0].data = altData.map(d => d.y);
+
                 tempChart.update();
                 altChart.update();
             };
@@ -163,4 +168,6 @@ if __name__ == '__main__':
     thread = threading.Thread(target=sensor_thread)
     thread.daemon = True
     thread.start()
-    app.run(host='0.0.0.0', port=5000)
+    import eventlet
+    import eventlet.wsgi
+    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), app)
