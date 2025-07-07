@@ -1,0 +1,16 @@
+[Unit]
+Description=I2C altimeter service
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=raspberry
+WorkingDirectory=/home/raspberry/Raspi-Ground-Altimeter
+ExecStart=/usr/bin/python main.py
+
+
+[Install]
+WantedBy=multi-user.target
+
